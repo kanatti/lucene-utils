@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+      {
+        "type": "lldb",
+        "request": "launch",
+        "name": "example-read",
+        "args": ["standalone", "start"],
+        "program": "${workspaceFolder}/target/debug/examples/read",
+        "cwd": "${workspaceFolder}",
+        "stopOnEntry": false,
+      }
+    ]
+  }

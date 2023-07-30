@@ -150,7 +150,7 @@ impl SegmentInfos {
                 &directory_reader,
                 segment_name,
                 segment_id,
-            ))
+            ).unwrap())
         }
 
         return Ok(SegmentInfos {
@@ -170,8 +170,13 @@ impl SegmentInfos {
      * Checks header and returns version if all good
      */
     pub fn check_header(index_input: &mut IndexInput) -> Result<u32, SegmentReadError> {
-        return header::check_header_no_magic(&mut index_input.bytes, SEGMENTS_CODEC)
-            .map_err(SegmentReadError::from);
+        return header::check_header_no_magic(
+            &mut index_input.bytes,
+            SEGMENTS_CODEC,
+            Self::MIN_VERSION,
+            Self::CURRENT_VERSION,
+        )
+        .map_err(SegmentReadError::from);
     }
 
     pub fn check_header_suffix(

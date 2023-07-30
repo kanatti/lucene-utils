@@ -1,62 +1,46 @@
 use std::path::Path;
 use std::path::PathBuf;
+use thiserror::Error;
 
 mod directory_reader;
+mod header;
 mod lucene_version;
 mod segment_info;
+mod util;
 
+use header::HeaderError;
 use segment_info::format::Lucene90SegmentInfoFormat;
 use segment_info::SegmentInfo;
 
 use directory_reader::DirectoryReader;
 use directory_reader::IndexInput;
 
+pub const SEGMENT_FILE_NAME: &'static str = "segments";
+pub const SEGMENTS_CODEC: &'static str = "segments";
+
 pub fn load_index(index_path: &Path) {
-    // Load index files into an in-memory structure
-    let index = Index::load(index_path).unwrap();
-}
+    let index_files: Vec<PathBuf> = std::fs::read_dir(index_path)
+        .expect("Cant read dir")
+        .filter(|entry| entry.is_ok())
+        .filter(|entry| entry.as_ref().unwrap().path().is_file())
+        .map(|entry| entry.unwrap().path())
+        .collect();
 
-#[derive(Debug)]
-pub struct Index {}
-
-#[derive(Debug)]
-pub enum LoadError {}
-
-impl Index {
-    // Load an index from disk
-    pub fn load(index_path: &Path) -> Result<Index, LoadError> {
-        // Get all file paths under the directory
-        let index_files: Vec<PathBuf> = std::fs::read_dir(index_path)
-            .expect("Cant read dir")
-            .filter(|entry| entry.is_ok())
-            .filter(|entry| entry.as_ref().unwrap().path().is_file())
-            .map(|entry| entry.unwrap().path())
-            .collect();
-
-        for index_file in &index_files {
-            println!("{:?}", index_file);
-        }
-
-        match get_last_commit_generation(&index_files) {
-            Some(generation) => {
-                println!("Generation: {}", generation);
-
-                let segment_infos = SegmentInfos::read_commit(index_path, generation);
-                println!("{:#?}", segment_infos);
-            }
-            _ => {
-                println!("No commit found");
-            }
-        }
-
-        Ok(Index {})
+    for index_file in &index_files {
+        println!("{:?}", index_file);
     }
-}
 
-pub struct IndexFileNames {}
+    match get_last_commit_generation(&index_files) {
+        Some(generation) => {
+            println!("Generation: {}", generation);
 
-impl IndexFileNames {
-    pub const SEGMENT: &'static str = "segments";
+            let segment_infos = SegmentInfos::read_commit(index_path, generation);
+            println!("{:#?}", segment_infos);
+        }
+        _ => {
+            println!("No commit found");
+        }
+    }
 }
 
 //// Gets the last commit generation from a list of segment files.
@@ -64,15 +48,15 @@ pub fn get_last_commit_generation<'a>(file_paths: &[PathBuf]) -> Option<u32> {
     file_paths
         .iter()
         .map(|path| path.file_name().unwrap().to_str().unwrap())
-        .filter(|file_name| file_name.starts_with(IndexFileNames::SEGMENT))
+        .filter(|file_name| file_name.starts_with(SEGMENT_FILE_NAME))
         .map(|segment_file_name| get_generation_from_segments_file_name(segment_file_name))
         .max()
 }
 
 pub fn get_generation_from_segments_file_name(segments_file_name: &str) -> u32 {
     match segments_file_name {
-        IndexFileNames::SEGMENT => 0,
-        _ => segments_file_name[(IndexFileNames::SEGMENT.len() + 1)..]
+        SEGMENT_FILE_NAME => 0,
+        _ => segments_file_name[(SEGMENT_FILE_NAME.len() + 1)..]
             .parse::<u32>()
             .unwrap(),
     }
@@ -80,16 +64,9 @@ pub fn get_generation_from_segments_file_name(segments_file_name: &str) -> u32 {
 
 pub fn get_segment_file_name(gen: u32) -> String {
     match gen {
-        0 => IndexFileNames::SEGMENT.to_string(),
-        n => format!("{}_{}", IndexFileNames::SEGMENT, n),
+        0 => SEGMENT_FILE_NAME.to_string(),
+        n => format!("{}_{}", SEGMENT_FILE_NAME, n),
     }
-}
-
-pub struct Codec {}
-
-impl Codec {
-    pub const MAGIC: u32 = 0x3fd76c17;
-    pub const SEGMENTS_CODEC: &'static str = "segments";
 }
 
 #[derive(Debug)]
@@ -105,13 +82,6 @@ pub struct SegmentInfos {
     pub segments: Vec<SegmentInfo>,
 }
 
-#[derive(Debug)]
-pub enum SegmentReadError {
-    IndexFormatTooOld,
-    IndexFormatTooNew,
-    CorruptedIndex,
-}
-
 impl SegmentInfos {
     pub const MIN_VERSION: u32 = 9;
     pub const CURRENT_VERSION: u32 = 10;
@@ -121,13 +91,9 @@ impl SegmentInfos {
         let directory_reader = DirectoryReader { path: index_path };
         let mut index_input = directory_reader.open(&get_segment_file_name(generation));
 
-        let magic = index_input.read_int();
+        let _magic = header::check_magic(&mut index_input.bytes)?;
 
-        if magic != Codec::MAGIC {
-            return Err(SegmentReadError::IndexFormatTooOld);
-        }
-
-        let format_version = Self::check_header(&mut index_input)?;
+        let _format_version = Self::check_header(&mut index_input)?;
 
         let id = index_input.read_id();
 
@@ -204,19 +170,8 @@ impl SegmentInfos {
      * Checks header and returns version if all good
      */
     pub fn check_header(index_input: &mut IndexInput) -> Result<u32, SegmentReadError> {
-        let codec = index_input.read_variable_string();
-
-        if codec != Codec::SEGMENTS_CODEC {
-            return Err(SegmentReadError::CorruptedIndex);
-        }
-
-        let version = index_input.read_int();
-
-        match version {
-            v if v < Self::MIN_VERSION => Err(SegmentReadError::IndexFormatTooOld),
-            v if v > Self::CURRENT_VERSION => Err(SegmentReadError::IndexFormatTooNew),
-            v => Ok(v),
-        }
+        return header::check_header_no_magic(&mut index_input.bytes, SEGMENTS_CODEC)
+            .map_err(SegmentReadError::from);
     }
 
     pub fn check_header_suffix(
@@ -231,5 +186,29 @@ impl SegmentInfos {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum SegmentReadError {
+    #[error("Index Format is too old")]
+    IndexFormatTooOld,
+    #[error("Index Format is too new")]
+    IndexFormatTooNew,
+    #[error("Index is corrupt")]
+    CorruptedIndex,
+}
+
+impl From<header::HeaderError> for SegmentReadError {
+    fn from(value: header::HeaderError) -> Self {
+        match value {
+            HeaderError::VersionTooOld => SegmentReadError::IndexFormatTooOld,
+            HeaderError::VersionTooNew => SegmentReadError::IndexFormatTooNew,
+            HeaderError::MagicMismatch {
+                expected: _,
+                actual: _,
+            } => SegmentReadError::IndexFormatTooOld,
+            _ => SegmentReadError::CorruptedIndex,
+        }
     }
 }

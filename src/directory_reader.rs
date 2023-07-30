@@ -5,7 +5,7 @@ use bytes::{Buf, Bytes};
 pub const ID_LENGTH: usize = 16;
 
 pub struct IndexInput {
-    bytes: Bytes,
+    pub bytes: Bytes,
 }
 
 impl IndexInput {
@@ -15,8 +15,25 @@ impl IndexInput {
         }
     }
 
-    pub fn read_magic(&mut self) -> u32 {
+    pub fn read_byte(&mut self) -> u8 {
+        self.bytes.get_u8()
+    }
+
+    pub fn read_int(&mut self) -> u32 {
         self.bytes.get_u32()
+    }
+
+
+    pub fn read_long(&mut self) -> u64 {
+        self.bytes.get_u64()
+    }
+
+    pub fn read_string(&mut self, length: usize) -> String {
+        return String::from_utf8(self.read_bytes(length)).unwrap();
+    }
+
+    pub fn read_bytes(&mut self, length: usize) -> Vec<u8> {
+        self.bytes.copy_to_bytes(length).to_vec()
     }
 
     pub fn read_variable_string(&mut self) -> String {
@@ -25,29 +42,13 @@ impl IndexInput {
         return self.read_string(length);
     }
 
-    pub fn read_string(&mut self, length: usize) -> String {
-        return String::from_utf8(self.read_bytes(length)).unwrap();
-    }
-
     // Fix: Incomplete, add cases to handle variable between one and five bytes
     pub fn read_variable_int(&mut self) -> u32 {
         self.bytes.get_u8().into()
     }
 
-    pub fn read_version(&mut self) -> u32 {
-        self.bytes.get_u32()
-    }
-
     pub fn read_id(&mut self) -> Vec<u8> {
         self.read_bytes(ID_LENGTH)
-    }
-
-    pub fn read_byte(&mut self) -> u8 {
-        self.bytes.get_u8()
-    }
-
-    pub fn read_bytes(&mut self, length: usize) -> Vec<u8> {
-        self.bytes.copy_to_bytes(length).to_vec()
     }
 }
 
@@ -62,5 +63,10 @@ impl<'a> DirectoryReader<'a> {
         let file_path = self.path.join(segment_file_name);
 
         IndexInput::new(std::fs::read(file_path).unwrap())
+    }
+
+    pub fn read_file(&self, file_name: &str) -> Bytes {
+        let file_path = self.path.join(file_name);
+        Bytes::from(std::fs::read(file_path).unwrap())
     }
 }

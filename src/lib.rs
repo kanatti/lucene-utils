@@ -3,6 +3,10 @@ use std::path::PathBuf;
 
 mod directory_reader;
 mod lucene_version;
+mod segment_info;
+
+use segment_info::format::Lucene90SegmentInfoFormat;
+use segment_info::SegmentInfo;
 
 use directory_reader::DirectoryReader;
 use directory_reader::IndexInput;
@@ -38,7 +42,7 @@ impl Index {
                 println!("Generation: {}", generation);
 
                 let segment_infos = SegmentInfos::read_commit(index_path, generation);
-                println!("{:?}", segment_infos);
+                println!("{:#?}", segment_infos);
             }
             _ => {
                 println!("No commit found");
@@ -90,10 +94,15 @@ impl Codec {
 
 #[derive(Debug)]
 pub struct SegmentInfos {
+    pub version: u64,
     pub index_created_version: u8,
     pub generation: u32,
     pub lucene_version: (u8, u8, u8),
     pub id: Vec<u8>,
+    pub counter: u64,
+    pub num_segments: u32,
+    pub min_segment_lucene_version: (u8, u8, u8),
+    pub segments: Vec<SegmentInfo>,
 }
 
 #[derive(Debug)]
@@ -112,13 +121,13 @@ impl SegmentInfos {
         let directory_reader = DirectoryReader { path: index_path };
         let mut index_input = directory_reader.open(&get_segment_file_name(generation));
 
-        let magic = index_input.read_magic();
+        let magic = index_input.read_int();
 
         if magic != Codec::MAGIC {
             return Err(SegmentReadError::IndexFormatTooOld);
         }
 
-        let _version = Self::check_header(&mut index_input)?;
+        let format_version = Self::check_header(&mut index_input)?;
 
         let id = index_input.read_id();
 
@@ -146,11 +155,48 @@ impl SegmentInfos {
             return Err(SegmentReadError::IndexFormatTooOld);
         }
 
+        let seg_info_version = index_input.read_long();
+
+        // Fix: Use vLong
+        let counter = index_input.read_byte() as u64;
+
+        let num_segments = index_input.read_int();
+
+        // Fix: Use vInt
+        let min_segment_lucene_version = (
+            index_input.read_byte(),
+            index_input.read_byte(),
+            index_input.read_byte(),
+        );
+
+        let mut segments = Vec::with_capacity(num_segments as usize);
+
+        for _i in 0..num_segments {
+            let segment_name = index_input.read_variable_string();
+            let segment_id = index_input.read_id();
+
+            // Fix: Add dynamic use of codec
+            let codec_name = index_input.read_variable_string();
+
+            println!("codec {}", codec_name);
+
+            segments.push(Lucene90SegmentInfoFormat::read(
+                &directory_reader,
+                segment_name,
+                segment_id,
+            ))
+        }
+
         return Ok(SegmentInfos {
+            version: seg_info_version,
             index_created_version,
             lucene_version,
             generation,
             id,
+            counter,
+            num_segments,
+            min_segment_lucene_version,
+            segments,
         });
     }
 
@@ -164,7 +210,7 @@ impl SegmentInfos {
             return Err(SegmentReadError::CorruptedIndex);
         }
 
-        let version = index_input.read_version();
+        let version = index_input.read_int();
 
         match version {
             v if v < Self::MIN_VERSION => Err(SegmentReadError::IndexFormatTooOld),

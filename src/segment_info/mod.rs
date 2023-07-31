@@ -15,3 +15,16 @@ pub struct SegmentInfo {
     pub attributes: HashMap<String, String>,
     pub sort_fields: Vec<String>,
 }
+
+#[derive(Debug)]
+pub struct SegmentCommitInfo {
+    pub info: SegmentInfo,
+    pub del_count: u32,
+    pub soft_del_count: u32,
+    pub del_gen: i64,
+    pub field_infos_gen: i64,
+    pub dv_gen: i64,
+    pub sci_id: Option<Vec<u8>>,
+    pub field_info_files: HashSet<String>,
+    pub dv_update_files: HashMap<u32, HashSet<String>>,
+}

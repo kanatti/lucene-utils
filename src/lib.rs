@@ -1,3 +1,6 @@
+use bytes::Buf;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -10,10 +13,11 @@ mod util;
 
 use header::HeaderError;
 use segment_info::format::Lucene90SegmentInfoFormat;
-use segment_info::SegmentInfo;
 
 use directory_reader::DirectoryReader;
 use directory_reader::IndexInput;
+
+use crate::segment_info::SegmentCommitInfo;
 
 pub const SEGMENT_FILE_NAME: &'static str = "segments";
 pub const SEGMENTS_CODEC: &'static str = "segments";
@@ -79,7 +83,7 @@ pub struct SegmentInfos {
     pub counter: u64,
     pub num_segments: u32,
     pub min_segment_lucene_version: (u8, u8, u8),
-    pub segments: Vec<SegmentInfo>,
+    pub segments: Vec<SegmentCommitInfo>,
 }
 
 impl SegmentInfos {
@@ -93,7 +97,7 @@ impl SegmentInfos {
 
         let _magic = header::check_magic(&mut index_input.bytes)?;
 
-        let _format_version = Self::check_header(&mut index_input)?;
+        let format_version = Self::check_header(&mut index_input)?;
 
         let id = index_input.read_id();
 
@@ -146,11 +150,49 @@ impl SegmentInfos {
 
             println!("codec {}", codec_name);
 
-            segments.push(Lucene90SegmentInfoFormat::read(
-                &directory_reader,
-                segment_name,
-                segment_id,
-            ).unwrap())
+            let segment_info =
+                Lucene90SegmentInfoFormat::read(&directory_reader, segment_name, segment_id)
+                    .unwrap();
+
+            let del_gen = index_input.bytes.get_i64();
+
+            let del_count = index_input.read_int();
+
+            // TODO: Validate del_count and max_docs inside the segment info
+
+            let field_infos_gen = index_input.bytes.get_i64();
+            let dv_gen = index_input.bytes.get_i64();
+            let soft_del_count = index_input.read_int();
+
+            // TODO: Soft delete validations
+
+            let sci_id = Self::read_segment_commit_info_id(format_version, &mut index_input)?;
+
+            let field_info_files = util::read_set(&mut index_input.bytes);
+
+            // TODO: Read DV Update Files
+            let num_dv_fields = index_input.read_int();
+            let dv_update_files : HashMap<u32, HashSet<String>> = HashMap::new();
+
+            // TODO: Checks of segment info version and min_version
+
+            let user_data = util::read_map(&mut index_input.bytes);
+
+            let sci = SegmentCommitInfo {
+                info: segment_info,
+                del_count,
+                soft_del_count,
+                del_gen,
+                field_infos_gen,
+                dv_gen,
+                sci_id,
+                field_info_files,
+                dv_update_files
+            };
+
+            segments.push(sci);
+
+            println!("Remaining : {}", index_input.bytes.remaining()); // 16 remaining?
         }
 
         return Ok(SegmentInfos {
@@ -191,6 +233,23 @@ impl SegmentInfos {
         }
 
         Ok(())
+    }
+
+    pub fn read_segment_commit_info_id(
+        format_version: u32,
+        index_input: &mut IndexInput,
+    ) -> Result<Option<Vec<u8>>, SegmentReadError> {
+        match format_version {
+            v if v > Self::MIN_VERSION => {
+                let marker = index_input.read_byte();
+                match marker {
+                    1 => Ok(Some(index_input.read_id())),
+                    0 => Ok(None),
+                    _ => Err(SegmentReadError::CorruptedIndex),
+                }
+            }
+            _ => Ok(None),
+        }
     }
 }
 

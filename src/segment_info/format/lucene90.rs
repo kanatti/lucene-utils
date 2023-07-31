@@ -38,17 +38,11 @@ impl Lucene90SegmentInfoFormat {
             Self::VERSION_CURRENT,
         )?;
 
-        println!("Remaining {}", bytes.remaining());
-
         // Check Index Header ID
         header::check_header_id(&mut bytes, &id)?;
 
-        println!("Remaining {}", bytes.remaining());
-
         // Check Index Header suffix
         header::check_header_suffix(&mut bytes, "")?;
-
-        println!("Remaining {}", bytes.remaining());
 
         // Parse segment info data
 
